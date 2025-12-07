@@ -25,7 +25,7 @@ END_FRAME = INFINITY
 
 @click.command()
 @click.option('--similarity', default = DEFAULT_MAXDEGREE, help = 'The similarity between this frame and the previous frame is less than this value and this frame will be saveed, default: %02g' % (DEFAULT_MAXDEGREE))
-@click.option('--pdfname', default = DEFAULT_PDFNAME, help = 'the name of output pdf file, default: %02s' % (DEFAULT_PDFNAME))
+@click.option('--pdfname', default = DEFAULT_PDFNAME, help = 'the name of output pdf file, default: video filename or %02s' % (DEFAULT_PDFNAME))
 @click.option('--start_frame', default = ZERO_SISG, help = 'start frame time point, default = %02s' % (ZERO_SISG))
 @click.option('--end_frame', default = INFINITY_SIGN, help = 'end frame time point, default = %02s' % (INFINITY_SIGN))
 @click.argument('outputpath')
@@ -43,7 +43,14 @@ def main(
     URL = url
     OUTPUTPATH = outputpath
     MAXDEGREE = similarity
-    PDFNAME = pdfname
+    
+    # Use video filename if pdfname is default
+    if pdfname == DEFAULT_PDFNAME:
+        video_filename = extractFilenameFromPath(url)
+        PDFNAME = video_filename + '.pdf'
+    else:
+        PDFNAME = pdfname
+    
     START_FRAME = hms2second(start_frame)
     END_FRAME = hms2second(end_frame)
 
@@ -175,6 +182,12 @@ def hms2second(hms):
 
     h, m, s = hms.split(':')
     return int(h) * 3600 + int(m) * 60 + int(s)
+
+def extractFilenameFromPath(path):
+    """Extract filename without extension from a file path"""
+    filename = os.path.basename(path)
+    name_without_ext = os.path.splitext(filename)[0]
+    return name_without_ext
 
 if __name__ == '__main__':
     main()
