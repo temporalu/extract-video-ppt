@@ -21,6 +21,10 @@ CV_CAP_PROP_FRAME_HEIGHT = 1080
 INFINITY_SIGN = 'INFINITY'
 ZERO_SISG = '00:00:00'
 
+VIDEO_EXTENSIONS = {
+    '.mp4', '.mov', '.m4v', '.mkv', '.avi', '.webm'
+}
+
 CACHE_DIR_NAME = 'video2pdt_tmp'
 DEBUG = False
 SKIP_EXTRACTION = False
@@ -48,10 +52,10 @@ CAPTURE_INTERVAL_SEC = 1.0
 @click.option('--min_gap', default=0, type=int, help='minimum seconds to skip comparisons after selecting a frame')
 @click.option('--interval', default=1.0, type=float, help='seconds between frame captures, default: 1.0')
 @click.option('--debug/--no-debug', default=False, help = 'debug mode')
-@click.argument('url')
+@click.argument('paths', nargs=-1)
 def main(
-    similarity, pdfname, start_frame, end_frame, 
-    outputpath, metric, min_gap, interval, debug, url):
+    similarity, pdfname, start_frame, end_frame,
+    outputpath, metric, min_gap, interval, debug, paths):
     global URL
     global OUTPUTPATH
     global MAXDEGREE
@@ -63,37 +67,56 @@ def main(
     global MIN_GAP_SEC
     global CAPTURE_INTERVAL_SEC
 
-    URL = url
     DEBUG = debug
-    
-    # Use video directory if outputpath is not specified
-    if outputpath is None:
-        OUTPUTPATH = extractDirectoryFromPath(url)
-    else:
-        OUTPUTPATH = outputpath
-    
-    MAXDEGREE = similarity
-    METRIC = metric.lower()
-    MIN_GAP_SEC = max(0, int(min_gap))
-    CAPTURE_INTERVAL_SEC = 1.0 if interval is None else max(1e-3, float(interval))
-    
-    # Use video filename if pdfname is default
-    if pdfname == DEFAULT_PDFNAME:
-        video_filename = extractFilenameFromPath(url)
-        PDFNAME = video_filename + '.pdf'
-    else:
-        PDFNAME = pdfname
-    
-    START_FRAME = hms2second(start_frame)
-    END_FRAME = hms2second(end_frame)
 
-    if START_FRAME >= END_FRAME:
-        exitByPrint('start >= end can not work')
+    input_videos = gather_input_videos(paths)
+    if len(input_videos) == 0:
+        exitByPrint('no video files found to process')
 
-    prepare()
-    start()
-    exportPdf()
-    clearEnv()
+    if len(input_videos) == 1:
+        url = input_videos[0]
+
+        URL = url
+
+        if outputpath is None:
+            OUTPUTPATH = extractDirectoryFromPath(url)
+        else:
+            OUTPUTPATH = outputpath
+
+        MAXDEGREE = similarity
+        METRIC = metric.lower()
+        MIN_GAP_SEC = max(0, int(min_gap))
+        CAPTURE_INTERVAL_SEC = 1.0 if interval is None else max(1e-3, float(interval))
+
+        if pdfname == DEFAULT_PDFNAME:
+            video_filename = extractFilenameFromPath(url)
+            PDFNAME = video_filename + '.pdf'
+        else:
+            PDFNAME = pdfname
+
+        START_FRAME = hms2second(start_frame)
+        END_FRAME = hms2second(end_frame)
+
+        if START_FRAME >= END_FRAME:
+            exitByPrint('start >= end can not work')
+
+        prepare()
+        start()
+        exportPdf()
+        clearEnv()
+    else:
+        run_batch(
+            input_videos,
+            similarity=similarity,
+            pdfname=pdfname,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            outputpath=outputpath,
+            metric=metric,
+            min_gap=min_gap,
+            interval=interval,
+            debug=debug,
+        )
 
     
 
@@ -366,6 +389,81 @@ def extractFilenameFromPath(path):
 def extractDirectoryFromPath(path):
     """Extract directory path from a file path"""
     return os.path.dirname(path) or '.'
+
+def is_video_file(path):
+    try:
+        if not os.path.isfile(path):
+            return False
+        (_, ext) = os.path.splitext(path)
+        return ext.lower() in VIDEO_EXTENSIONS
+    except Exception:
+        return False
+
+def list_videos_in_dir(path):
+    files = []
+    try:
+        for name in os.listdir(path):
+            p = os.path.join(path, name)
+            if os.path.isfile(p):
+                (_, ext) = os.path.splitext(p)
+                if ext.lower() in VIDEO_EXTENSIONS:
+                    files.append(p)
+    except Exception:
+        pass
+    return files
+
+def gather_input_videos(paths):
+    videos = []
+    seen = set()
+    for p in paths:
+        if not p:
+            continue
+        x = os.path.expanduser(p)
+        if os.path.isdir(x):
+            for f in list_videos_in_dir(x):
+                if f not in seen:
+                    videos.append(f)
+                    seen.add(f)
+        elif is_video_file(x):
+            if x not in seen:
+                videos.append(x)
+                seen.add(x)
+    return videos
+
+def build_args_for_single_video(url, similarity, pdfname, start_frame, end_frame, outputpath, metric, min_gap, interval, debug, force_pdfname):
+    args = [sys.executable, '-m', 'video2ppt.video2ppt']
+    args += ['--similarity', str(similarity)]
+    if force_pdfname and pdfname != DEFAULT_PDFNAME:
+        args += ['--pdfname', pdfname]
+    args += ['--start_frame', start_frame]
+    args += ['--end_frame', end_frame]
+    if outputpath is not None:
+        args += ['--outputpath', outputpath]
+    args += ['--metric', metric]
+    args += ['--min_gap', str(int(min_gap))]
+    args += ['--interval', str(float(interval))]
+    if debug:
+        args += ['--debug']
+    args += [url]
+    return args
+
+def run_batch(video_paths, similarity, pdfname, start_frame, end_frame, outputpath, metric, min_gap, interval, debug):
+    max_workers = max(1, min(len(video_paths), (os.cpu_count() or 1)))
+    print('batch videos:', len(video_paths), 'workers', max_workers)
+    futures = []
+    results = []
+    # In batch mode, always use per-video default pdf name unless user forces a name and there is only one video
+    force_pdfname = (pdfname != DEFAULT_PDFNAME and len(video_paths) == 1)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for url in video_paths:
+            args = build_args_for_single_video(url, similarity, pdfname, start_frame, end_frame, outputpath, metric, min_gap, interval, debug, force_pdfname)
+            futures.append(executor.submit(subprocess.run, args, capture_output=False))
+        for f in futures:
+            r = f.result()
+            results.append(r.returncode)
+    failed = sum(1 for rc in results if rc != 0)
+    if failed:
+        print('batch completed with', failed, 'failures out of', len(video_paths))
 
 if __name__ == '__main__':
     main()
