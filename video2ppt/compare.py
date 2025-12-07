@@ -91,9 +91,44 @@ def Hamming_distance(hash1,hash2):
         num += 1 
  return num 
  
-def compareImg(img1, img2):
- degree = classify_hist_with_split(img1,img2)
- return degree
+def _ssim_similarity(image1, image2):
+ image1 = cv2.resize(image1, (256, 256))
+ image2 = cv2.resize(image2, (256, 256))
+ gray1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+ gray2 = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
+ x = gray1.astype(np.float32)
+ y = gray2.astype(np.float32)
+ mu_x = np.mean(x)
+ mu_y = np.mean(y)
+ sigma_x2 = np.var(x)
+ sigma_y2 = np.var(y)
+ sigma_xy = np.mean((x - mu_x) * (y - mu_y))
+ C1 = (0.01 * 255) ** 2
+ C2 = (0.03 * 255) ** 2
+ num = (2 * mu_x * mu_y + C1) * (2 * sigma_xy + C2)
+ den = (mu_x * mu_x + mu_y * mu_y + C1) * (sigma_x2 + sigma_y2 + C2)
+ if den == 0:
+     return 0.0
+ s = num / den
+ if s < 0:
+     s = 0.0
+ if s > 1:
+     s = 1.0
+ return float(s)
+
+def compareImg(img1, img2, metric = 'hist'):
+ if metric == 'hist':
+     return float(classify_hist_with_split(img1, img2))
+ elif metric == 'ahash':
+     d = float(classify_aHash(img1, img2))
+     return 1.0 - d / 64.0
+ elif metric == 'phash':
+     d = float(classify_pHash(img1, img2))
+     return 1.0 - d / 64.0
+ elif metric == 'ssim':
+     return _ssim_similarity(img1, img2)
+ else:
+     return float(classify_hist_with_split(img1, img2))
  
 if __name__ == '__main__': 
  img1 = cv2.imread('./data/frame8.jpg') 

@@ -4,6 +4,11 @@ import cv2
 import os
 import shutil
 import click
+import hashlib
+import time
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
 
 from .compare import compareImg
 from .images2pdf import images2pdf
@@ -16,33 +21,61 @@ CV_CAP_PROP_FRAME_HEIGHT = 1080
 INFINITY_SIGN = 'INFINITY'
 ZERO_SISG = '00:00:00'
 
+CACHE_DIR_NAME = 'video2pdt_tmp'
+DEBUG = False
+SKIP_EXTRACTION = False
+CLEANUP_MODE = 'none'
+CACHE_BASE_DIR = ''
+VIDEO_HASH = ''
+
 URL = ''
 OUTPUTPATH = ''
 PDFNAME = DEFAULT_PDFNAME
 MAXDEGREE = DEFAULT_MAXDEGREE
 START_FRAME = 0
 END_FRAME = INFINITY
+METRIC = 'hist'
+MIN_GAP_SEC = 0
+CAPTURE_INTERVAL_SEC = 1.0
 
 @click.command()
 @click.option('--similarity', default = DEFAULT_MAXDEGREE, help = 'The similarity between this frame and the previous frame is less than this value and this frame will be saveed, default: %02g' % (DEFAULT_MAXDEGREE))
 @click.option('--pdfname', default = DEFAULT_PDFNAME, help = 'the name of output pdf file, default: video filename or %02s' % (DEFAULT_PDFNAME))
 @click.option('--start_frame', default = ZERO_SISG, help = 'start frame time point, default = %02s' % (ZERO_SISG))
 @click.option('--end_frame', default = INFINITY_SIGN, help = 'end frame time point, default = %02s' % (INFINITY_SIGN))
-@click.argument('outputpath')
+@click.option('--outputpath', default = None, help = 'output directory path, default: same directory as video file')
+@click.option('--metric', default='hist', type=click.Choice(['hist','ahash','phash','ssim'], case_sensitive=False), help='similarity metric: hist | ahash | phash | ssim')
+@click.option('--min_gap', default=0, type=int, help='minimum seconds to skip comparisons after selecting a frame')
+@click.option('--interval', default=1.0, type=float, help='seconds between frame captures, default: 1.0')
+@click.option('--debug/--no-debug', default=False, help = 'debug mode')
 @click.argument('url')
 def main(
     similarity, pdfname, start_frame, end_frame, 
-    outputpath, url):
+    outputpath, metric, min_gap, interval, debug, url):
     global URL
     global OUTPUTPATH
     global MAXDEGREE
     global PDFNAME
     global START_FRAME
     global END_FRAME
+    global DEBUG
+    global METRIC
+    global MIN_GAP_SEC
+    global CAPTURE_INTERVAL_SEC
 
     URL = url
-    OUTPUTPATH = outputpath
+    DEBUG = debug
+    
+    # Use video directory if outputpath is not specified
+    if outputpath is None:
+        OUTPUTPATH = extractDirectoryFromPath(url)
+    else:
+        OUTPUTPATH = outputpath
+    
     MAXDEGREE = similarity
+    METRIC = metric.lower()
+    MIN_GAP_SEC = max(0, int(min_gap))
+    CAPTURE_INTERVAL_SEC = 1.0 if interval is None else max(1e-3, float(interval))
     
     # Use video filename if pdfname is default
     if pdfname == DEFAULT_PDFNAME:
@@ -67,6 +100,7 @@ def main(
 def start():
     global CV_CAP_PROP_FRAME_WIDTH
     global CV_CAP_PROP_FRAME_HEIGHT
+    global SKIP_EXTRACTION
 
     vcap = cv2.VideoCapture(URL)
     FPS = int(vcap.get(5))
@@ -81,86 +115,210 @@ def start():
     if START_FRAME > TOTAL_FRAME / FPS:
         exitByPrint('video duration is not support')
     
-    # set start frame
+    if SKIP_EXTRACTION:
+        vcap.release()
+        cv2.destroyAllWindows()
+        return
+
+    use_ffmpeg = shutil.which('ffmpeg') is not None
+    if use_ffmpeg:
+        start_hms = "%02d:%02d:%02d" % (START_FRAME // 3600, (START_FRAME % 3600) // 60, START_FRAME % 60)
+        ffmpeg_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y']
+        if sys.platform == 'darwin':
+            ffmpeg_cmd += ['-hwaccel', 'videotoolbox']
+        ffmpeg_cmd += ['-ss', start_hms, '-i', URL]
+        if END_FRAME != INFINITY:
+            duration = END_FRAME - START_FRAME
+            if duration <= 0:
+                vcap.release()
+                cv2.destroyAllWindows()
+                exitByPrint('start >= end can not work')
+            ffmpeg_cmd += ['-t', str(duration)]
+        fps_value = 1.0 / CAPTURE_INTERVAL_SEC
+        ffmpeg_cmd += ['-vf', 'fps=%0.6f' % fps_value, '-threads', str(max(1, (os.cpu_count() or 1))), os.path.join(DEFAULT_PATH, 'frame%05d.jpg')]
+        r = subprocess.run(ffmpeg_cmd)
+        vcap.release()
+        cv2.destroyAllWindows()
+        if r.returncode != 0:
+            vcap = cv2.VideoCapture(URL)
+            vcap.set(cv2.CAP_PROP_POS_FRAMES, START_FRAME * FPS)
+            frameCount = ((int(TOTAL_FRAME / FPS) if END_FRAME == INFINITY else END_FRAME) - START_FRAME) * FPS
+            lastDegree = 0
+            lastFrame = []
+            readedFrame = 0
+            next_capture_frame = CAPTURE_INTERVAL_SEC * FPS
+            while(True):
+                click.clear()
+                print('process:' + str(math.floor(readedFrame / frameCount * 100)) + '%')
+                ret, frame = vcap.read()
+                if ret:
+                    if readedFrame >= frameCount:
+                        break
+                    readedFrame += 1
+                    if readedFrame + 1e-6 < next_capture_frame:
+                        continue
+                    degree = 0
+                    if len(lastFrame):
+                        degree = compareImg(frame, lastFrame, METRIC)
+                        lastDegree = round(degree, 2)
+                    name = DEFAULT_PATH + '/frame' + second2hms(math.ceil((readedFrame + START_FRAME * FPS) / FPS)) + '-' + str(lastDegree) + '-' + ('%05d' % readedFrame) + '.jpg'
+                    if not cv2.imwrite(name, frame):
+                        exitByPrint('write file failed !')
+                    lastFrame = frame
+                    next_capture_frame += CAPTURE_INTERVAL_SEC * FPS
+                else:
+                    break
+            vcap.release()
+            cv2.destroyAllWindows()
+        return
     vcap.set(cv2.CAP_PROP_POS_FRAMES, START_FRAME * FPS)
     frameCount = ((int(TOTAL_FRAME / FPS) if END_FRAME == INFINITY else END_FRAME) - START_FRAME) * FPS
-
+    cv2.setUseOptimized(True)
+    cv2.setNumThreads(max(1, (os.cpu_count() or 1)))
     lastDegree = 0
     lastFrame = []
     readedFrame = 0
-
-    while(True):
+    next_capture_frame = CAPTURE_INTERVAL_SEC * FPS
+    futures = []
+    with ThreadPoolExecutor(max_workers=max(1, (os.cpu_count() or 1))) as executor:
+        while(True):
             click.clear()
             print('process:' + str(math.floor(readedFrame / frameCount * 100)) + '%')
             ret, frame = vcap.read()
             if ret:
                 if readedFrame >= frameCount:
                     break
-
                 readedFrame += 1
-                if readedFrame % FPS != 0:
+                if readedFrame + 1e-6 < next_capture_frame:
                     continue
-
-                isWrite = False
-
+                degree = 0
                 if len(lastFrame):
-                    degree = compareImg(frame, lastFrame)
-                    if degree < MAXDEGREE:
-                        isWrite = True
-                        lastDegree = round(degree, 2)
-                else:
-                    isWrite = True
-
-                if isWrite:
-                    name = DEFAULT_PATH + '/frame'+ second2hms(math.ceil((readedFrame + START_FRAME * FPS) / FPS)) + '-' + str(lastDegree) + '.jpg'
-                    if not cv2.imwrite(name, frame):
-                        exitByPrint('write file failed !')
-
-                    lastFrame = frame
-                    
+                    degree = compareImg(frame, lastFrame, METRIC)
+                    lastDegree = round(degree, 2)
+                name = DEFAULT_PATH + '/frame' + second2hms(math.ceil((readedFrame + START_FRAME * FPS) / FPS)) + '-' + str(lastDegree) + '-' + ('%05d' % readedFrame) + '.jpg'
+                futures.append(executor.submit(cv2.imwrite, name, frame))
+                lastFrame = frame
+                next_capture_frame += CAPTURE_INTERVAL_SEC * FPS
             else:
                 break
-
+        for f in futures:
+            if not f.result():
+                exitByPrint('write file failed !')
     vcap.release()
     cv2.destroyAllWindows()
 
 def prepare():
     global OUTPUTPATH
+    global DEFAULT_PATH
+    global VIDEO_HASH
+    global CACHE_BASE_DIR
+    global SKIP_EXTRACTION
+    global CLEANUP_MODE
+    global DEBUG
 
     try:
-
         if not os.path.exists(OUTPUTPATH):
             os.makedirs(OUTPUTPATH)
-
     except OSError as error:
         exitByPrint(error)
 
     try:
-        
-        clearEnv()
-        os.makedirs(DEFAULT_PATH)
-
+        VIDEO_HASH = hash_file(URL)
+        video_dir = extractDirectoryFromPath(URL)
+        CACHE_BASE_DIR = os.path.join(video_dir, CACHE_DIR_NAME)
+        interval_str = "%0.6f" % float(CAPTURE_INTERVAL_SEC)
+        if os.path.exists(CACHE_BASE_DIR):
+            matched = ''
+            for name in os.listdir(CACHE_BASE_DIR):
+                p = os.path.join(CACHE_BASE_DIR, name)
+                if not os.path.isdir(p):
+                    continue
+                parts = name.split('_')
+                if len(parts) == 3:
+                    if parts[2] == VIDEO_HASH and parts[1] == interval_str:
+                        matched = p
+                        break
+                elif len(parts) == 2:
+                    if parts[1] == VIDEO_HASH and abs(CAPTURE_INTERVAL_SEC - 1.0) < 1e-9:
+                        matched = p
+                        break
+            if matched:
+                DEFAULT_PATH = matched
+                SKIP_EXTRACTION = True
+                CLEANUP_MODE = 'none'
+            else:
+                ts = time.strftime('%Y%m%d%H%M%S')
+                DEFAULT_PATH = os.path.join(CACHE_BASE_DIR, ts + '_' + interval_str + '_' + VIDEO_HASH)
+                os.makedirs(DEFAULT_PATH, exist_ok=True)
+                SKIP_EXTRACTION = False
+                CLEANUP_MODE = 'none' if DEBUG else 'subdir'
+        else:
+            ts = time.strftime('%Y%m%d%H%M%S')
+            DEFAULT_PATH = os.path.join(CACHE_BASE_DIR, ts + '_' + interval_str + '_' + VIDEO_HASH)
+            os.makedirs(DEFAULT_PATH, exist_ok=True)
+            SKIP_EXTRACTION = False
+            CLEANUP_MODE = 'none' if DEBUG else 'basedir'
     except OSError as error:
         exitByPrint(error)
 
 def exportPdf():
-    images = os.listdir(DEFAULT_PATH)
-    images.sort()
-    imagePaths = []
-
-    for image in images:
-        basepath = DEFAULT_PATH + '/' + image
-        (fileName, mimeType) = os.path.splitext(basepath)
-        
-        if mimeType != '.jpg':
+    files = []
+    for name in os.listdir(DEFAULT_PATH):
+        basepath = os.path.join(DEFAULT_PATH, name)
+        if not os.path.isfile(basepath):
             continue
-
-        imagePaths.append(basepath)
-
-    pdfPath = DEFAULT_PATH + '/' + PDFNAME
-    images2pdf(pdfPath, imagePaths, CV_CAP_PROP_FRAME_WIDTH, CV_CAP_PROP_FRAME_HEIGHT)
-
+        (_, ext) = os.path.splitext(basepath)
+        if ext != '.jpg':
+            continue
+        files.append(basepath)
+    files.sort()
+    selected = []
+    last_selected_img = None
+    last_selected_sec = None
+    for basepath in files:
+        filename = os.path.basename(basepath)
+        ts = ''
+        if 'frame' in filename:
+            part = filename.split('frame', 1)[1]
+            if '-' in part:
+                ts = part.split('-', 1)[0]
+        if ts:
+            ss = ts.split('.')
+            if len(ss) == 3:
+                sec = int(ss[0]) * 3600 + int(ss[1]) * 60 + int(ss[2])
+                if sec < START_FRAME:
+                    continue
+                if END_FRAME != INFINITY and sec > END_FRAME:
+                    continue
+        img = cv2.imread(basepath)
+        if img is None:
+            continue
+        if len(selected) == 0:
+            selected.append(basepath)
+            last_selected_img = img
+            if ts:
+                ss = ts.split('.')
+                if len(ss) == 3:
+                    last_selected_sec = int(ss[0]) * 3600 + int(ss[1]) * 60 + int(ss[2])
+            continue
+        if ts and last_selected_sec is not None:
+            ss = ts.split('.')
+            if len(ss) == 3:
+                sec = int(ss[0]) * 3600 + int(ss[1]) * 60 + int(ss[2])
+                if MIN_GAP_SEC > 0 and sec - last_selected_sec < MIN_GAP_SEC:
+                    continue
+        degree = compareImg(img, last_selected_img, METRIC)
+        if degree < MAXDEGREE:
+            selected.append(basepath)
+            last_selected_img = img
+            if ts:
+                ss = ts.split('.')
+                if len(ss) == 3:
+                    last_selected_sec = int(ss[0]) * 3600 + int(ss[1]) * 60 + int(ss[2])
+    pdfPath = os.path.join(DEFAULT_PATH, PDFNAME)
+    images2pdf(pdfPath, selected, CV_CAP_PROP_FRAME_WIDTH, CV_CAP_PROP_FRAME_HEIGHT)
     shutil.copy(pdfPath, OUTPUTPATH)
+    print('selected_frames', len(selected), 'total_frames', len(files), 'metric', METRIC, 'threshold', MAXDEGREE, 'min_gap', MIN_GAP_SEC, 'output', os.path.join(OUTPUTPATH, PDFNAME))
 
 def exitByPrint(str):
     print(str)
@@ -168,8 +326,17 @@ def exitByPrint(str):
     exit(1)
 
 def clearEnv():
-    if os.path.exists(DEFAULT_PATH):
-        shutil.rmtree(DEFAULT_PATH)
+    global CLEANUP_MODE
+    global CACHE_BASE_DIR
+    global DEBUG
+    if DEBUG:
+        return
+    if CLEANUP_MODE == 'subdir':
+        if os.path.exists(DEFAULT_PATH):
+            shutil.rmtree(DEFAULT_PATH)
+    elif CLEANUP_MODE == 'basedir':
+        if os.path.exists(CACHE_BASE_DIR):
+            shutil.rmtree(CACHE_BASE_DIR)
 
 def second2hms(second):
     m, s = divmod(second, 60)
@@ -183,11 +350,22 @@ def hms2second(hms):
     h, m, s = hms.split(':')
     return int(h) * 3600 + int(m) * 60 + int(s)
 
+def hash_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
 def extractFilenameFromPath(path):
     """Extract filename without extension from a file path"""
     filename = os.path.basename(path)
     name_without_ext = os.path.splitext(filename)[0]
     return name_without_ext
+
+def extractDirectoryFromPath(path):
+    """Extract directory path from a file path"""
+    return os.path.dirname(path) or '.'
 
 if __name__ == '__main__':
     main()
