@@ -1,6 +1,6 @@
 # 网课录播课件提取
 
-## 注意事项
+## 备忘
 
 1. 当前分支主要是给我自己用的。程序现在支持 mlx 硬件加速和并行运算，并且可以同时处理多个视频文件。我的设备是 MacBook M3 Max 36GB，记得自己调性能限制免得跑崩掉。
 2. '--similarity'参数越大，筛出来的片子越多，反之亦然。你可能要来回试一下。
@@ -8,6 +8,7 @@
 4. 程序现在支持'--interval'参数，用于指定抽帧间隔，默认值为 1 秒。也是用于解决老师突然切下一张幻灯片，导致某一个一闪而过的元素存在于抽帧间隔中而被漏掉的问题。
 5. 程序现在支持指定差异识别算法。具体见下。
 6. 程序现在在待处理视频文件同路径下创建存储临时文件的路径，并且每次处理新的图像时会在该路径下创建'时间戳\_抽帧间隔\_哈希值'的子路径，并在该子路径中存放抽出来的图。程序每次运行之后会先算待处理视频文件的哈希，查找其对应的缓存路径有没有。有就直接从缓存路径中读取，没有就抽帧并比较，避免每次调参数都重新抽帧。
+7. 新增'--pick_mode'参数：1 表示选择一组高相似帧中的最早一张，2 表示选择最晚一张。最早的一张一般是干净的课件，最晚的一张一般是有老师笔记的课件。默认是1，可以不传入。
 
 ## 快速上手
 
@@ -30,7 +31,8 @@ source .venv/bin/activate
 
 # 2. 运行工具（常用的需要调整的参数已经申明了）
 
-python -m video2ppt.video2ppt --similarity 0.96 --metric ssim '/Users/pengyu/Downloads/牙体牙髓/040-口腔内科学牙体牙髓病学-第1单元-第1节.mp4' --interval 0.5 --debug
+python -m video2ppt.video2ppt --similarity 0.96 --metric ssim '/Users/pengyu/Downloads/牙体牙髓' --interval 0.5 --debug
+python -m video2ppt.video2ppt --pick_mode 2 --similarity 0.96 --metric ssim '/Users/pengyu/Downloads/牙体牙髓' --interval 0.5 --debug
 python -m video2ppt.video2ppt --similarity 0.8 --metric phash '/Users/pengyu/Downloads/牙体牙髓/040-口腔内科学牙体牙髓病学-第1单元-第1节.mp4' --debug
 python -m video2ppt.video2ppt --similarity 0.7 --metric hist ''
 python -m video2ppt.video2ppt --similarity 0.8 --metric ahash ''

@@ -41,6 +41,7 @@ END_FRAME = INFINITY
 METRIC = 'hist'
 MIN_GAP_SEC = 0
 CAPTURE_INTERVAL_SEC = 1.0
+PICK_MODE = 1
 
 @click.command()
 @click.option('--similarity', default = DEFAULT_MAXDEGREE, help = 'The similarity between this frame and the previous frame is less than this value and this frame will be saveed, default: %02g' % (DEFAULT_MAXDEGREE))
@@ -51,11 +52,12 @@ CAPTURE_INTERVAL_SEC = 1.0
 @click.option('--metric', default='hist', type=click.Choice(['hist','ahash','phash','ssim'], case_sensitive=False), help='similarity metric: hist | ahash | phash | ssim')
 @click.option('--min_gap', default=0, type=int, help='minimum seconds to skip comparisons after selecting a frame')
 @click.option('--interval', default=1.0, type=float, help='seconds between frame captures, default: 1.0')
+@click.option('--pick_mode', default=1, type=int, help='1: earliest frame; 2: latest frame')
 @click.option('--debug/--no-debug', default=False, help = 'debug mode')
 @click.argument('paths', nargs=-1)
 def main(
     similarity, pdfname, start_frame, end_frame,
-    outputpath, metric, min_gap, interval, debug, paths):
+    outputpath, metric, min_gap, interval, pick_mode, debug, paths):
     global URL
     global OUTPUTPATH
     global MAXDEGREE
@@ -66,6 +68,7 @@ def main(
     global METRIC
     global MIN_GAP_SEC
     global CAPTURE_INTERVAL_SEC
+    global PICK_MODE
 
     DEBUG = debug
 
@@ -87,6 +90,7 @@ def main(
         METRIC = metric.lower()
         MIN_GAP_SEC = max(0, int(min_gap))
         CAPTURE_INTERVAL_SEC = 1.0 if interval is None else max(1e-3, float(interval))
+        PICK_MODE = 1 if int(pick_mode) != 2 else 2
 
         if pdfname == DEFAULT_PDFNAME:
             video_filename = extractFilenameFromPath(url)
@@ -115,6 +119,7 @@ def main(
             metric=metric,
             min_gap=min_gap,
             interval=interval,
+            pick_mode=pick_mode,
             debug=debug,
         )
 
@@ -295,53 +300,108 @@ def exportPdf():
             continue
         files.append(basepath)
     files.sort()
-    selected = []
-    last_selected_img = None
-    last_selected_sec = None
-    for basepath in files:
-        filename = os.path.basename(basepath)
-        ts = ''
-        if 'frame' in filename:
-            part = filename.split('frame', 1)[1]
-            if '-' in part:
-                ts = part.split('-', 1)[0]
-        if ts:
-            ss = ts.split('.')
-            if len(ss) == 3:
-                sec = int(ss[0]) * 3600 + int(ss[1]) * 60 + int(ss[2])
-                if sec < START_FRAME:
-                    continue
-                if END_FRAME != INFINITY and sec > END_FRAME:
-                    continue
-        img = cv2.imread(basepath)
-        if img is None:
-            continue
-        if len(selected) == 0:
-            selected.append(basepath)
-            last_selected_img = img
+    if PICK_MODE == 1:
+        selected = []
+        last_selected_img = None
+        last_selected_sec = None
+        for basepath in files:
+            filename = os.path.basename(basepath)
+            ts = ''
+            if 'frame' in filename:
+                part = filename.split('frame', 1)[1]
+                if '-' in part:
+                    ts = part.split('-', 1)[0]
+            sec = None
             if ts:
                 ss = ts.split('.')
                 if len(ss) == 3:
-                    last_selected_sec = int(ss[0]) * 3600 + int(ss[1]) * 60 + int(ss[2])
-            continue
-        if ts and last_selected_sec is not None:
-            ss = ts.split('.')
-            if len(ss) == 3:
-                sec = int(ss[0]) * 3600 + int(ss[1]) * 60 + int(ss[2])
+                    sec = int(ss[0]) * 3600 + int(ss[1]) * 60 + int(ss[2])
+                    if sec < START_FRAME:
+                        continue
+                    if END_FRAME != INFINITY and sec > END_FRAME:
+                        continue
+            img = cv2.imread(basepath)
+            if img is None:
+                continue
+            if len(selected) == 0:
+                selected.append(basepath)
+                last_selected_img = img
+                if sec is not None:
+                    last_selected_sec = sec
+                continue
+            if sec is not None and last_selected_sec is not None:
                 if MIN_GAP_SEC > 0 and sec - last_selected_sec < MIN_GAP_SEC:
                     continue
-        degree = compareImg(img, last_selected_img, METRIC)
-        if degree < MAXDEGREE:
-            selected.append(basepath)
-            last_selected_img = img
+            degree = compareImg(img, last_selected_img, METRIC)
+            if degree < MAXDEGREE:
+                selected.append(basepath)
+                last_selected_img = img
+                if sec is not None:
+                    last_selected_sec = sec
+        pdfPath = os.path.join(DEFAULT_PATH, PDFNAME)
+        images2pdf(pdfPath, selected, CV_CAP_PROP_FRAME_WIDTH, CV_CAP_PROP_FRAME_HEIGHT)
+        shutil.copy(pdfPath, OUTPUTPATH)
+        print('selected_frames', len(selected), 'total_frames', len(files), 'metric', METRIC, 'threshold', MAXDEGREE, 'min_gap', MIN_GAP_SEC, 'output', os.path.join(OUTPUTPATH, PDFNAME))
+    else:
+        selected = []
+        group_first_img = None
+        group_first_sec = None
+        group_first_path = None
+        group_last_img = None
+        group_last_sec = None
+        group_last_path = None
+        last_selected_sec = None
+        for basepath in files:
+            filename = os.path.basename(basepath)
+            ts = ''
+            if 'frame' in filename:
+                part = filename.split('frame', 1)[1]
+                if '-' in part:
+                    ts = part.split('-', 1)[0]
+            sec = None
             if ts:
                 ss = ts.split('.')
                 if len(ss) == 3:
-                    last_selected_sec = int(ss[0]) * 3600 + int(ss[1]) * 60 + int(ss[2])
-    pdfPath = os.path.join(DEFAULT_PATH, PDFNAME)
-    images2pdf(pdfPath, selected, CV_CAP_PROP_FRAME_WIDTH, CV_CAP_PROP_FRAME_HEIGHT)
-    shutil.copy(pdfPath, OUTPUTPATH)
-    print('selected_frames', len(selected), 'total_frames', len(files), 'metric', METRIC, 'threshold', MAXDEGREE, 'min_gap', MIN_GAP_SEC, 'output', os.path.join(OUTPUTPATH, PDFNAME))
+                    sec = int(ss[0]) * 3600 + int(ss[1]) * 60 + int(ss[2])
+                    if sec < START_FRAME:
+                        continue
+                    if END_FRAME != INFINITY and sec > END_FRAME:
+                        continue
+            img = cv2.imread(basepath)
+            if img is None:
+                continue
+            if group_first_img is None:
+                group_first_img = img
+                group_first_path = basepath
+                group_last_img = img
+                group_last_path = basepath
+                group_first_sec = sec
+                group_last_sec = sec
+                continue
+            if sec is not None and last_selected_sec is not None:
+                if MIN_GAP_SEC > 0 and sec - last_selected_sec < MIN_GAP_SEC:
+                    continue
+            degree = compareImg(img, group_first_img, METRIC)
+            if degree < MAXDEGREE:
+                if group_last_path is not None:
+                    selected.append(group_last_path)
+                    last_selected_sec = group_last_sec
+                group_first_img = img
+                group_first_path = basepath
+                group_last_img = img
+                group_last_path = basepath
+                group_first_sec = sec
+                group_last_sec = sec
+            else:
+                group_last_img = img
+                group_last_path = basepath
+                group_last_sec = sec
+        if group_last_path is not None:
+            selected.append(group_last_path)
+        pdfPath = os.path.join(DEFAULT_PATH, PDFNAME)
+        images2pdf(pdfPath, selected, CV_CAP_PROP_FRAME_WIDTH, CV_CAP_PROP_FRAME_HEIGHT)
+        shutil.copy(pdfPath, OUTPUTPATH)
+        print('selected_frames', len(selected), 'total_frames', len(files), 'metric', METRIC, 'threshold', MAXDEGREE, 'min_gap', MIN_GAP_SEC, 'output', os.path.join(OUTPUTPATH, PDFNAME))
 
 def exitByPrint(str):
     print(str)
@@ -430,7 +490,7 @@ def gather_input_videos(paths):
                 seen.add(x)
     return videos
 
-def build_args_for_single_video(url, similarity, pdfname, start_frame, end_frame, outputpath, metric, min_gap, interval, debug, force_pdfname):
+def build_args_for_single_video(url, similarity, pdfname, start_frame, end_frame, outputpath, metric, min_gap, interval, pick_mode, debug, force_pdfname):
     args = [sys.executable, '-m', 'video2ppt.video2ppt']
     args += ['--similarity', str(similarity)]
     if force_pdfname and pdfname != DEFAULT_PDFNAME:
@@ -442,12 +502,13 @@ def build_args_for_single_video(url, similarity, pdfname, start_frame, end_frame
     args += ['--metric', metric]
     args += ['--min_gap', str(int(min_gap))]
     args += ['--interval', str(float(interval))]
+    args += ['--pick_mode', str(int(pick_mode))]
     if debug:
         args += ['--debug']
     args += [url]
     return args
 
-def run_batch(video_paths, similarity, pdfname, start_frame, end_frame, outputpath, metric, min_gap, interval, debug):
+def run_batch(video_paths, similarity, pdfname, start_frame, end_frame, outputpath, metric, min_gap, interval, pick_mode, debug):
     max_workers = max(1, min(len(video_paths), (os.cpu_count() or 1)))
     print('batch videos:', len(video_paths), 'workers', max_workers)
     futures = []
@@ -456,7 +517,7 @@ def run_batch(video_paths, similarity, pdfname, start_frame, end_frame, outputpa
     force_pdfname = (pdfname != DEFAULT_PDFNAME and len(video_paths) == 1)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for url in video_paths:
-            args = build_args_for_single_video(url, similarity, pdfname, start_frame, end_frame, outputpath, metric, min_gap, interval, debug, force_pdfname)
+            args = build_args_for_single_video(url, similarity, pdfname, start_frame, end_frame, outputpath, metric, min_gap, interval, pick_mode, debug, force_pdfname)
             futures.append(executor.submit(subprocess.run, args, capture_output=False))
         for f in futures:
             r = f.result()
