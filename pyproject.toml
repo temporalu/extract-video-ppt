@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "extract-video-ppt"
+version = "1.1.2"
+description = "support export ppt from a video"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "wudu", email = "296525335@qq.com"},
+    {name = "pengyu", email = "winfredppp@gmail.com"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "click",
+    "fpdf2",
+    "matplotlib",
+    "opencv-python",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "ruff",
+    "mypy",
+]
+
+[project.scripts]
+evp = "video2ppt:main"
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.ruff]
+line-length = 88
+target-version = "py38"
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

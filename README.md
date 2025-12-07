@@ -11,7 +11,7 @@
 
 ## 快速上手
 
-```shell
+```bash
 # 1. 激活虚拟环境
 source .venv/bin/activate
 
@@ -27,7 +27,7 @@ evp --similarity 0.6 --pdfname output.pdf --start_frame 00:00:09 --end_frame 00:
 
 ## '--metric'和'--similarity'的设置
 
-参数是gpt-5-high自己试出来的。但是我感觉漏得太多了。记得自己调。
+参数是 gpt-5-high 自己试出来的。但是我感觉漏得太多了。记得自己调。
 
 1. 默认：ssim 0.65
 2. 更稳健但对布局变化较敏感时需更高阈值：phash 0.8
@@ -40,3 +40,14 @@ evp --similarity 0.6 --pdfname output.pdf --start_frame 00:00:09 --end_frame 00:
 - aHash/pHash 每对帧计算开销极低（小尺寸、简单 DCT 或均值哈希），适合大批量比较与低间隔抽帧。
 - SSIM 略重但结构敏感，已采用全局灰度简化版本，复杂度仍可接受。
 - min_gap 通过跳过近期帧减少比较次数，在多页连续场景下效果明显。
+
+## 配置环境
+
+```bash
+
+uv venv
+
+source .venv/bin/activate
+
+uv pip install -e .
+```
