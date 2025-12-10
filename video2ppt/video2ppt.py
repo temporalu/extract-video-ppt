@@ -285,7 +285,7 @@ def prepare():
             DEFAULT_PATH = os.path.join(CACHE_BASE_DIR, ts + '_' + interval_str + '_' + VIDEO_HASH)
             os.makedirs(DEFAULT_PATH, exist_ok=True)
             SKIP_EXTRACTION = False
-            CLEANUP_MODE = 'none' if DEBUG else 'basedir'
+            CLEANUP_MODE = 'none' if DEBUG else 'subdir'
     except OSError as error:
         exitByPrint(error)
 
@@ -415,11 +415,19 @@ def clearEnv():
     if DEBUG:
         return
     if CLEANUP_MODE == 'subdir':
-        if os.path.exists(DEFAULT_PATH):
-            shutil.rmtree(DEFAULT_PATH)
+        target = DEFAULT_PATH
     elif CLEANUP_MODE == 'basedir':
-        if os.path.exists(CACHE_BASE_DIR):
-            shutil.rmtree(CACHE_BASE_DIR)
+        target = CACHE_BASE_DIR
+    else:
+        target = ''
+    if target:
+        for _ in range(5):
+            try:
+                if os.path.exists(target):
+                    shutil.rmtree(target)
+                break
+            except Exception:
+                time.sleep(0.2)
 
 def second2hms(second):
     m, s = divmod(second, 60)

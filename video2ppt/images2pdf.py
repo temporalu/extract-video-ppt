@@ -7,6 +7,8 @@ def images2pdf(outpath, images, w = 1920, h = 1080):
     titleH = 60
     size=(h + titleH, w)
     for image in images:
+        if not os.path.exists(image):
+            continue
         pdf.add_page(orientation = 'L', format=size, same=False)
         pdf.set_font('helvetica', size = titleH)
         pdf.cell(w = 400, h = titleH, txt = os.path.basename(image), border = 1, align = 'C')

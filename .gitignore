@@ -5,3 +5,4 @@ extract_video_ppt.egg-info/*
 video2ppt/__pycache__/*
 .DS_Store
 /demo/*
+note.md
